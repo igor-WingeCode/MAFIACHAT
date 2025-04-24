@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MF Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #000000;
+            color: #ffffff;
+        }
+        
+        #loginForm, #chatForm {
+            max-width: 500px;
+            margin: 0 auto;
+            background: #111111;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(255,255,255,0.1);
+        }
+        
+        #chatForm {
+            display: none;
+        }
+        
+        .input-group {
+            margin-bottom: 15px;
+        }
+        
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+            border: 1px solid #333;
+            border-radius: 4px;
+            box-sizing: border-box;
+            background: #222;
+            color: #fff;
+        }
+        
+        button {
+            background-color: #ea384c;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        
+        button:hover {
+            background-color: #c4293d;
+        }
+        
+        #messages {
+            margin-top: 20px;
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #333;
+            padding: 10px;
+            border-radius: 4px;
+            background: #111111;
+        }
+        
+        .message {
+            margin-bottom: 10px;
+            padding: 8px;
+            background: #222;
+            border-radius: 4px;
+        }
+        
+        .message .nickname {
+            font-weight: bold;
+            color: #ea384c;
+        }
+        
+        .message .time {
+            color: #888;
+            font-size: 0.8em;
+        }
+        
+        #messageInput {
+            width: calc(100% - 90px);
+            margin-right: 10px;
+        }
+
+        #banTimer {
+            background: #ea384c;
+            color: white;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            text-align: center;
+            display: none;
+        }
+
+        /* Стилизация скроллбара */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #111111;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #ea384c;
+            border-radius: 4px;
+        }
+
+        .message.important {
+            background: #2a0808;
+            border: 1px solid #ea384c;
+        }
+        
+        .important-checkbox {
+            margin-right: 10px;
+            accent-color: #ea384c;
+        }
+    </style>
+</head>
+<body>
+    <div id="loginForm">
+        <h2>Вход в чат</h2>
+        <div id="banTimer"></div>
+        <div class="input-group">
+            <label for="nickname">Никнейм:</label>
+            <input type="text" id="nickname" required>
+        </div>
+        <div class="input-group">
+            <label for="password">Пароль:</label>
+            <input type="password" id="password" required>
+        </div>
+        <button onclick="login()">Войти</button>
+    </div>
+
+    <div id="chatForm">
+        <div id="messages"></div>
+        <div class="input-group" style="display: flex; margin-top: 10px;">
+            <input type="checkbox" id="importantMessage" class="important-checkbox">
+            <label for="importantMessage" style="color: #ea384c; margin-right: 10px;">Важное</label>
+            <input type="text" id="messageInput" placeholder="Введите сообщение...">
+            <button onclick="sendMessage()">Отправить</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let currentNickname = '';
+        let banTimerInterval;
+        let notificationEnabled = false;
+
+        // Запрашиваем разрешение на уведомления
+        async function requestNotificationPermission() {
+            if ('Notification' in window) {
+                const permission = await Notification.requestPermission();
+                notificationEnabled = permission === 'granted';
+                return notificationEnabled;
+            }
+            return false;
+        }
+
+        // Показываем уведомление
+        function showNotification(title, body) {
+            if (notificationEnabled && document.hidden) {
+                try {
+                    const notification = new Notification(title, {
+                        body: body,
+                        icon: '/icon.png',
+                        tag: 'chat-message'
+                    });
+                    
+                    notification.onclick = function() {
+                        window.focus();
+                        this.close();
+                    };
+                } catch (error) {
+                    console.error('Error showing notification:', error);
+                }
+            }
+        }
+
+        // Проверяем сохраненный никнейм
+        window.onload = function() {
+            const savedNickname = localStorage.getItem('chatNickname');
+            if (savedNickname) {
+                document.getElementById('nickname').value = savedNickname;
+                document.getElementById('nickname').readOnly = true;
+            }
+            
+            requestNotificationPermission();
+        }
+
+        function updateBanTimer(banUntil) {
+            const banTimerDiv = document.getElementById('banTimer');
+            const now = Date.now();
+            const timeLeft = Math.max(0, banUntil - now);
+            
+            if (timeLeft > 0) {
+                const minutes = Math.floor(timeLeft / 60000);
+                const seconds = Math.floor((timeLeft % 60000) / 1000);
+                banTimerDiv.style.display = 'block';
+                banTimerDiv.textContent = `Бан истекает через: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+            } else {
+                banTimerDiv.style.display = 'none';
+                if (banTimerInterval) {
+                    clearInterval(banTimerInterval);
+                    banTimerInterval = null;
+                }
+            }
+        }
+
+        function login() {
+            const nicknameInput = document.getElementById('nickname');
+            const nickname = nicknameInput.value.trim();
+            const password = document.getElementById('password').value;
+            
+            if (!nickname || !password) {
+                alert('Заполните все поля');
+                return;
+            }
+            
+            socket.emit('login', { nickname, password });
+        }
+
+        socket.on('loginSuccess', ({ nickname }) => {
+            currentNickname = nickname;
+            localStorage.setItem('chatNickname', nickname);
+            document.getElementById('loginForm').style.display = 'none';
+            document.getElementById('chatForm').style.display = 'block';
+            document.getElementById('password').value = '';
+        });
+
+        socket.on('loginError', (message) => {
+            alert(message);
+            if (message.includes('забанены')) {
+                const minutes = parseFloat(message.match(/\d+/)[0]);
+                const banUntil = Date.now() + (minutes * 60 * 1000);
+                
+                if (banTimerInterval) {
+                    clearInterval(banTimerInterval);
+                }
+                
+                updateBanTimer(banUntil);
+                banTimerInterval = setInterval(() => updateBanTimer(banUntil), 1000);
+            }
+        });
+
+        socket.on('messages', (messages) => {
+            const messagesDiv = document.getElementById('messages');
+            messagesDiv.innerHTML = '';
+            messages.forEach(addMessage);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        });
+
+        socket.on('newMessage', (message) => {
+            addMessage(message);
+            if (message.nickname !== currentNickname) {
+                showNotification(
+                    `Новое сообщение от ${message.nickname}`,
+                    message.text
+                );
+            }
+        });
+
+        socket.on('nicknameChanged', ({ oldNick, newNick }) => {
+            showNotification(
+                'Изменение никнейма',
+                `${oldNick} сменил ник на ${newNick}`
+            );
+        });
+
+        socket.on('userMuted', ({ nickname, muted }) => {
+            showNotification(
+                'Мут пользователя',
+                `${nickname} был ${muted ? 'замучен' : 'размучен'}`
+            );
+        });
+
+        socket.on('userBanned', ({ nickname, banned }) => {
+            showNotification(
+                'Бан пользователя',
+                `${nickname} был ${banned ? 'забанен' : 'разбанен'}`
+            );
+        });
+
+        socket.on('messagesCleared', () => {
+            document.getElementById('messages').innerHTML = '';
+            showNotification(
+                'Чат очищен',
+                'Все сообщения были удалены'
+            );
+        });
+
+        function addMessage(message) {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message' + (message.important ? ' important' : '');
+            
+            const time = new Date(message.timestamp).toLocaleTimeString();
+            messageDiv.innerHTML = `
+                <span class="nickname">${message.nickname}</span>
+                <span class="time">[${time}]</span>: 
+                ${escapeHtml(message.text)}
+            `;
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const importantCheckbox = document.getElementById('importantMessage');
+            const message = input.value.trim();
+            
+            if (message) {
+                socket.emit('message', {
+                    text: message,
+                    important: importantCheckbox.checked
+                });
+                input.value = '';
+                importantCheckbox.checked = false;
+            }
+        }
+
+        function escapeHtml(unsafe) {
+            return unsafe
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // Отправка сообщения по Enter
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>
